@@ -6,18 +6,18 @@ require "c/unistd"
 
 class File < IO::FileDescriptor
   # The file/directory separator character. '/' in unix, '\\' in windows.
-  SEPARATOR = ifdef windows
+  SEPARATOR = {% if flag?(:windows) %}
     '\\'
-  else
+  {% else %}
     '/'
-  end
+  {% end %}
 
   # The file/directory separator string. "/" in unix, "\\" in windows.
-  SEPARATOR_STRING = ifdef windows
+  SEPARATOR_STRING = {% if flag?(:windows) %}
     "\\"
-  else
+  {% else %}
     "/"
-  end
+  {% end %}
 
   # :nodoc:
   DEFAULT_CREATE_MODE = LibC::S_IRUSR | LibC::S_IWUSR | LibC::S_IRGRP | LibC::S_IROTH
@@ -237,9 +237,46 @@ class File < IO::FileDescriptor
   # ```
   def self.basename(path, suffix) : String
     suffix.check_no_null_byte
-    basename = basename(path)
-    basename = basename[0, basename.size - suffix.size] if basename.ends_with?(suffix)
-    basename
+    basename(path).chomp(suffix)
+  end
+
+  # Changes the owner of the specified file.
+  #
+  # ```
+  # File.chown("/foo/bar/baz.cr", 1001, 100)
+  # File.chown("/foo/bar", gid: 100)
+  # ```
+  #
+  # Unless *follow_symlinks* is set to true, then the owner symlink itself will
+  # be changed, otherwise the owner of the symlink destination file will be
+  # changed. For example, assuming symlinks as `foo -> bar -> baz`:
+  #
+  # ```
+  # File.chown("foo", gid: 100)                        # changes foo's gid
+  # File.chown("foo", gid: 100, follow_symlinks: true) # changes baz's gid
+  # ```
+  def self.chown(path, uid : Int? = -1, gid : Int = -1, follow_symlinks = false)
+    ret = if !follow_symlinks && symlink?(path)
+            LibC.lchown(path, uid, gid)
+          else
+            LibC.chown(path, uid, gid)
+          end
+    raise Errno.new("Error changing owner of '#{path}'") if ret == -1
+  end
+
+  # Changes the permissions of the specified file.
+  #
+  # Symlinks are dereferenced, so that only the permissions of the symlink
+  # destination are changed, never the permissions of the symlink itself.
+  #
+  # ```
+  # File.chmod("foo/bin", 0o755)
+  # File.chmod("foo/bin/exec", 0o700)
+  # ```
+  def self.chmod(path, mode : Int)
+    if LibC.chmod(path, mode) == -1
+      raise Errno.new("Error changing permissions of '#{path}'")
+    end
   end
 
   # Delete the file at *path*. Deleting non-existent file will raise an exception.
@@ -313,9 +350,9 @@ class File < IO::FileDescriptor
     end
 
     String.build do |str|
-      ifdef !windows
+      {% if !flag?(:windows) %}
         str << SEPARATOR_STRING
-      end
+      {% end %}
       items.join SEPARATOR_STRING, str
     end
   end
@@ -384,10 +421,13 @@ class File < IO::FileDescriptor
         file.set_encoding(encoding, invalid: invalid)
         file.gets_to_end
       else
+        # We try to read a string with an initialize capacity
+        # equal to the file's size, but the size might not be
+        # correct or even be zero (for example for /proc files)
         size = file.size.to_i
-        String.new(size) do |buffer|
-          file.read Slice.new(buffer, size)
-          {size.to_i, 0}
+        size = 256 if size == 0
+        String.build(size) do |io|
+          IO.copy(file, io)
         end
       end
     end
@@ -516,7 +556,7 @@ class File < IO::FileDescriptor
     code
   end
 
-  def to_s(io)
+  def inspect(io)
     io << "#<File:" << @path
     io << " (closed)" if closed?
     io << ">"

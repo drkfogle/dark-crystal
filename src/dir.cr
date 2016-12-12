@@ -9,7 +9,7 @@ require "c/sys/stat"
 # the parent directory (..), and the directory itself (.).
 class Dir
   include Enumerable(String)
-  include Iterable
+  include Iterable(String)
 
   getter path : String
 
@@ -203,13 +203,18 @@ class Dir
     io << "#<Dir:" << @path << ">"
   end
 
-  # :nodoc:
-  struct EntryIterator
+  def inspect(io)
+    to_s(io)
+  end
+
+  def pretty_print(pp)
+    pp.text inspect
+  end
+
+  private struct EntryIterator
     include Iterator(String)
 
-    @dir : Dir
-
-    def initialize(@dir)
+    def initialize(@dir : Dir)
     end
 
     def next

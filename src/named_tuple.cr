@@ -47,7 +47,7 @@ struct NamedTuple
   # ```
   def self.from(hash : Hash)
     {% begin %}
-    NamedTuple.new(**{{@type.type_vars.first}}).from(hash)
+    NamedTuple.new(**{{T}}).from(hash)
     {% end %}
   end
 
@@ -72,7 +72,7 @@ struct NamedTuple
     {% begin %}
       NamedTuple.new(
       {% for key, value in T %}
-        {{key}}: self[{{key.symbolize}}].cast(hash.fetch(:{{key}}) { hash["{{key}}"] }),
+        {{key.stringify}}: self[{{key.symbolize}}].cast(hash.fetch({{key.symbolize}}) { hash["{{key}}"] }),
       {% end %}
       )
     {% end %}
@@ -86,10 +86,13 @@ struct NamedTuple
   # key = :name
   # tuple[key] # => "Crystal"
   #
+  # key = "year"
+  # tuple[key] # => 2011
+  #
   # key = :other
   # tuple[key] # # => KeyError
   # ```
-  def [](key : Symbol)
+  def [](key : Symbol | String)
     fetch(key) { raise KeyError.new "Missing named tuple key: #{key.inspect}" }
   end
 
@@ -101,10 +104,13 @@ struct NamedTuple
   # key = :name
   # tuple[key]? # => "Crystal"
   #
+  # key = "year"
+  # tuple[key] # => 2011
+  #
   # key = :other
   # tuple[key]? # => nil
   # ```
-  def []?(key : Symbol)
+  def []?(key : Symbol | String)
     fetch(key, nil)
   end
 
@@ -113,9 +119,10 @@ struct NamedTuple
   # ```
   # tuple = {name: "Crystal", year: 2011}
   # tuple.fetch(:name, "Unknown") # => "Crystal"
+  # tuple.fetch("year", 0)        # => 2011
   # tuple.fetch(:other, 0)        # => 0
   # ```
-  def fetch(key : Symbol, default_value)
+  def fetch(key : Symbol | String, default_value)
     fetch(key) { default_value }
   end
 
@@ -129,6 +136,20 @@ struct NamedTuple
   def fetch(key : Symbol, &block)
     {% for key in T %}
       return self[{{key.symbolize}}] if {{key.symbolize}} == key
+    {% end %}
+    yield
+  end
+
+  # Returns the value for the given *key*, if there's such key, otherwise the value returned by the block.
+  #
+  # ```
+  # tuple = {name: "Crystal", year: 2011}
+  # tuple.fetch("name") { "Unknown" } # => "Crystal"
+  # tuple.fetch("other") { 0 }        # => 0
+  # ```
+  def fetch(key : String, &block)
+    {% for key in T %}
+      return self[{{key.symbolize}}] if {{key.stringify}} == key
     {% end %}
     yield
   end
@@ -208,11 +229,39 @@ struct NamedTuple
       {% if i > 0 %}
         io << ", "
       {% end %}
-      io << {{key.stringify}}
+      key = {{key.stringify}}
+      if Symbol.needs_quotes?(key)
+        key.inspect(io)
+      else
+        io << key
+      end
       io << ": "
       self[{{key.symbolize}}].inspect(io)
     {% end %}
     io << "}"
+  end
+
+  def pretty_print(pp)
+    pp.surround("{", "}", left_break: nil, right_break: nil) do
+      {% for key, value, i in T %}
+        {% if i > 0 %}
+          pp.comma
+        {% end %}
+        pp.group do
+          key = {{key.stringify}}
+          if Symbol.needs_quotes?(key)
+            pp.text key.inspect
+          else
+            pp.text key
+          end
+          pp.text ": "
+          pp.nest do
+            pp.breakable ""
+            self[{{key.symbolize}}].pretty_print(pp)
+          end
+        end
+      {% end %}
+    end
   end
 
   # Yields each key and value in this named tuple.
@@ -395,7 +444,7 @@ struct NamedTuple
     compare_with_other_named_tuple(other)
   end
 
-  private def compare_with_other_named_tuple(other : U)
+  private def compare_with_other_named_tuple(other : U) forall U
     {% if T.keys.sort == U.keys.sort %}
       {% for key in T %}
         return false unless self[{{key.symbolize}}] == other[{{key.symbolize}}]
@@ -412,7 +461,7 @@ struct NamedTuple
     {% begin %}
       {
         {% for key in T %}
-          {{key}}: self[{{key.symbolize}}].clone,
+          {{key.stringify}}: self[{{key.symbolize}}].clone,
         {% end %}
       }
     {% end %}

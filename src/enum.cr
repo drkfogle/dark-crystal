@@ -310,8 +310,16 @@ struct Enum
   # Color.from_value?(3) # => nil
   # ```
   def self.from_value?(value) : self | Nil
-    {% for member in @type.constants %}
-      return {{@type}}::{{member}} if {{@type}}::{{member}}.value == value
+    {% if @type.has_attribute?("Flags") %}
+      mask = {% for member, i in @type.constants %}\
+        {% if i != 0 %} | {% end %}\
+        {{@type}}::{{member}}.value{% end %}
+      return if (mask & value != value) || (value == 0 && values.none? { |val| val.to_i == 0 })
+      return new(value)
+    {% else %}
+      {% for member in @type.constants %}
+        return {{@type}}::{{member}} if {{@type}}::{{member}}.value == value
+      {% end %}
     {% end %}
     nil
   end
@@ -338,8 +346,11 @@ struct Enum
   # end
 
   # Returns the enum member that has the given name, or
-  # raises if no such member exists. The comparison is made by using
-  # `String#camelcase` between *string* and the enum members names.
+  # raises `ArgumentError` if no such member exists. The comparison is made by using
+  # `String#camelcase` and `String#downcase` between *string* and
+  # the enum members names, so a member named "FourtyTwo" or "FOURTY_TWO"
+  # is found with any of these strings: "fourty_two", "FourtyTwo", "FOURTY_TWO",
+  # "FOURTYTWO", "fourtytwo".
   #
   # ```
   # Color.parse("Red")    # => Color::Red
@@ -347,12 +358,15 @@ struct Enum
   # Color.parse("Yellow") # => Exception
   # ```
   def self.parse(string) : self
-    parse?(string) || raise "Unknown enum #{self} value: #{string}"
+    parse?(string) || raise ArgumentError.new("Unknown enum #{self} value: #{string}")
   end
 
   # Returns the enum member that has the given name, or
   # `nil` if no such member exists. The comparison is made by using
-  # `String#camelcase` between *string* and the enum members names.
+  # `String#camelcase` and `String#downcase` between *string* and
+  # the enum members names, so a member named "FourtyTwo" or "FOURTY_TWO"
+  # is found with any of these strings: "fourty_two", "FourtyTwo", "FOURTY_TWO",
+  # "FOURTYTWO", "fourtytwo".
   #
   # ```
   # Color.parse?("Red")    # => Color::Red
@@ -361,9 +375,9 @@ struct Enum
   # ```
   def self.parse?(string) : self?
     {% begin %}
-      case string.camelcase
+      case string.camelcase.downcase
       {% for member in @type.constants %}
-        when {{member.stringify.camelcase}}
+        when {{member.stringify.camelcase.downcase}}
           {{@type}}::{{member}}
       {% end %}
       else

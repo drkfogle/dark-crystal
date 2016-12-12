@@ -93,8 +93,23 @@ end
 # pp [1, 2, 3].map(&.to_s) # prints "[1, 2, 3].map(&.to_s) # => ["1", "2", "3"]"
 # ```
 macro pp(*exps)
-  {% for exp in exps %}
-    ::puts "#{ {{exp.stringify}} } # => #{ ({{exp}}).inspect }"
+  {% if exps.size == 0 %}
+    # Nothing
+  {% elsif exps.size == 1 %}
+    {% exp = exps.first %}
+    %prefix = "#{{{ exp.stringify }}} # => "
+    ::print %prefix
+    PrettyPrint.format({{exp}}, STDOUT, width: 80 - %prefix.size, indent: %prefix.size)
+    ::puts
+  {% else %}
+    %names = { {{*exps.map(&.stringify)}} }
+    %max_size = %names.max_of &.size
+    {% for exp, i in exps %}
+      %prefix = "#{%names[{{i}}].ljust(%max_size)} # => "
+      ::print %prefix
+      PrettyPrint.format({{exp}}, STDOUT, width: 80 - %prefix.size, indent: %prefix.size)
+      ::puts
+    {% end %}
   {% end %}
 end
 

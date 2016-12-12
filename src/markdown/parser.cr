@@ -1,4 +1,7 @@
 class Markdown::Parser
+  record PrefixHeader, count : Int32
+  record UnorderedList, char : Char
+
   @lines : Array(String)
 
   def initialize(text : String, @renderer : Renderer)
@@ -15,64 +18,89 @@ class Markdown::Parser
   def process_paragraph
     line = @lines[@line]
 
-    if empty? line
+    case item = classify(line)
+    when :empty
       @line += 1
-      return
+    when :header1
+      render_header 1, line, 2
+    when :header2
+      render_header 2, line, 2
+    when PrefixHeader
+      render_prefix_header(item.count, line)
+    when :code
+      render_code
+    when :horizontal_rule
+      render_horizontal_rule
+    when UnorderedList
+      render_unordered_list(item.char)
+    when :fenced_code
+      render_fenced_code
+    when :ordered_list
+      render_ordered_list
+    when :quote
+      render_quote
+    else
+      render_paragraph
+    end
+  end
+
+  def classify(line)
+    if empty? line
+      return :empty
     end
 
     if next_line_is_all?('=')
-      return render_header 1, line, 2
+      return :header1
     end
 
     if next_line_is_all?('-')
-      return render_header 2, line, 2
+      return :header2
     end
 
-    pounds = count_pounds line
-    if pounds
-      return render_prefix_header pounds, line
+    if pounds = count_pounds line
+      return PrefixHeader.new(pounds)
     end
 
     if line.starts_with? "    "
-      return render_code
+      return :code
     end
 
     if horizontal_rule? line
-      return render_horizontal_rule
+      return :horizontal_rule
     end
 
     if starts_with_bullet_list_marker?(line, '*')
-      return render_unordered_list('*')
+      return UnorderedList.new('*')
     end
 
     if starts_with_bullet_list_marker?(line, '+')
-      return render_unordered_list('+')
+      return UnorderedList.new('+')
     end
 
     if starts_with_bullet_list_marker?(line, '-')
-      return render_unordered_list('-')
+      return UnorderedList.new('-')
     end
 
     if starts_with_backticks? line
-      return render_fenced_code
+      return :fenced_code
     end
 
     if starts_with_digits_dot? line
-      return render_ordered_list
+      return :ordered_list
     end
 
     if line.starts_with? ">"
-      return render_quote
+      return :quote
     end
 
-    render_paragraph
+    nil
   end
 
   def render_prefix_header(level, line)
     bytesize = line.bytesize
     str = line.to_unsafe
     pos = level
-    while pos < bytesize && str[pos].chr.whitespace?
+    while pos < bytesize && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
@@ -91,27 +119,9 @@ class Markdown::Parser
   def render_paragraph
     @renderer.begin_paragraph
 
-    while true
-      process_line @lines[@line]
-      @line += 1
-
-      if @line == @lines.size
-        break
-      end
-
-      line = @lines[@line]
-
-      if empty? line
-        @line += 1
-        break
-      end
-
-      if (starts_with_bullet_list_marker?(line) || starts_with_backticks?(line) || starts_with_digits_dot?(line))
-        break
-      end
-
-      newline
-    end
+    join_next_lines continue_on: nil
+    process_line @lines[@line]
+    @line += 1
 
     @renderer.end_paragraph
 
@@ -185,20 +195,11 @@ class Markdown::Parser
   def render_quote
     @renderer.begin_quote
 
-    while true
-      line = @lines[@line]
+    join_next_lines continue_on: :quote
+    line = @lines[@line]
 
-      break unless line.starts_with? ">"
-
-      @renderer.text line.byte_slice(Math.min(line.bytesize, 2))
-      @line += 1
-
-      if @line == @lines.size
-        break
-      end
-
-      newline
-    end
+    @renderer.text line.byte_slice(Math.min(line.bytesize, 2))
+    @line += 1
 
     @renderer.end_quote
 
@@ -209,6 +210,7 @@ class Markdown::Parser
     @renderer.begin_unordered_list
 
     while true
+      join_next_lines continue_on: nil, stop_on: UnorderedList.new(prefix)
       line = @lines[@line]
 
       if empty? line
@@ -251,6 +253,7 @@ class Markdown::Parser
     @renderer.begin_ordered_list
 
     while true
+      join_next_lines continue_on: nil, stop_on: :ordered_list
       line = @lines[@line]
 
       if empty? line
@@ -292,7 +295,7 @@ class Markdown::Parser
     str = line.to_unsafe
     pos = 0
 
-    while pos < bytesize && str[pos].chr.whitespace?
+    while pos < bytesize && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
@@ -306,9 +309,9 @@ class Markdown::Parser
     last_is_space = true
 
     while pos < bytesize
-      case str[pos].chr
+      case str[pos].unsafe_chr
       when '*'
-        if pos + 1 < bytesize && str[pos + 1].chr == '*'
+        if pos + 1 < bytesize && str[pos + 1].unsafe_chr == '*'
           if two_stars || has_closing?('*', 2, str, (pos + 2), bytesize)
             @renderer.text line.byte_slice(cursor, pos - cursor)
             pos += 1
@@ -331,7 +334,7 @@ class Markdown::Parser
           one_star = !one_star
         end
       when '_'
-        if pos + 1 < bytesize && str[pos + 1].chr == '_'
+        if pos + 1 < bytesize && str[pos + 1].unsafe_chr == '_'
           if two_underscores || (last_is_space && has_closing?('_', 2, str, (pos + 2), bytesize))
             @renderer.text line.byte_slice(cursor, pos - cursor)
             pos += 1
@@ -401,7 +404,7 @@ class Markdown::Parser
           in_link = false
         end
       end
-      last_is_space = pos < bytesize && str[pos].chr.whitespace?
+      last_is_space = pos < bytesize && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
@@ -419,17 +422,17 @@ class Markdown::Parser
     return false unless idx
 
     if count == 2
-      return false unless idx + 1 < bytesize && str[idx + 1].chr == char
+      return false unless idx + 1 < bytesize && str[idx + 1].unsafe_chr == char
     end
 
-    !str[idx - 1].chr.whitespace?
+    !str[idx - 1].unsafe_chr.ascii_whitespace?
   end
 
   def check_link(str, pos, bytesize)
     # We need to count nested brackets to do it right
     bracket_count = 1
     while pos < bytesize
-      case str[pos].chr
+      case str[pos].unsafe_chr
       when '['
         bracket_count += 1
       when ']'
@@ -477,7 +480,7 @@ class Markdown::Parser
     bytesize = line.bytesize
     str = line.to_unsafe
     pos = 0
-    while pos < bytesize && pos < 6 && str[pos].chr == '#'
+    while pos < bytesize && pos < 6 && str[pos].unsafe_chr == '#'
       pos += 1
     end
     pos == 0 ? nil : pos
@@ -487,7 +490,7 @@ class Markdown::Parser
     bytesize = line.bytesize
     str = line.to_unsafe
     pos = 0
-    while pos < bytesize && pos < 4 && str[pos].chr.whitespace?
+    while pos < bytesize && pos < 4 && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
@@ -502,17 +505,17 @@ class Markdown::Parser
     bytesize = line.bytesize
     str = line.to_unsafe
     pos = 0
-    while pos < bytesize && str[pos].chr.whitespace?
+    while pos < bytesize && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
     return false unless pos < bytesize
-    return false unless prefix ? str[pos].chr == prefix : (str[pos].chr == '*' || str[pos].chr == '-' || str[pos].chr == '+')
+    return false unless prefix ? str[pos].unsafe_chr == prefix : (str[pos].unsafe_chr == '*' || str[pos].unsafe_chr == '-' || str[pos].unsafe_chr == '+')
 
     pos += 1
 
     return false unless pos < bytesize
-    str[pos].chr.whitespace?
+    str[pos].unsafe_chr.ascii_whitespace?
   end
 
   def previous_line_is_not_intended_and_starts_with_bullet_list_marker?(prefix)
@@ -535,19 +538,19 @@ class Markdown::Parser
     bytesize = line.bytesize
     str = line.to_unsafe
     pos = 0
-    while pos < bytesize && str[pos].chr.whitespace?
+    while pos < bytesize && str[pos].unsafe_chr.ascii_whitespace?
       pos += 1
     end
 
     return false unless pos < bytesize
-    return false unless str[pos].chr.digit?
+    return false unless str[pos].unsafe_chr.ascii_number?
 
-    while pos < bytesize && str[pos].chr.digit?
+    while pos < bytesize && str[pos].unsafe_chr.ascii_number?
       pos += 1
     end
 
     return false unless pos < bytesize
-    str[pos].chr == '.'
+    str[pos].unsafe_chr == '.'
   end
 
   def next_lines_empty_of_code?
@@ -575,7 +578,7 @@ class Markdown::Parser
     count = 1
 
     line.each_char do |char|
-      next if char.whitespace?
+      next if char.ascii_whitespace?
 
       if non_space_char
         if char == non_space_char
@@ -603,5 +606,38 @@ class Markdown::Parser
 
   def newline
     @renderer.text "\n"
+  end
+
+  # Join this line with next lines if they form a paragraph,
+  # until next lines don't start another entity like a list,
+  # header, etc.
+  def join_next_lines(continue_on = :none, stop_on = :none)
+    start = @line
+    line = @line
+    line += 1
+    while line < @lines.size
+      item = classify(@lines[line])
+
+      case item
+      when continue_on
+        # continue
+      when stop_on
+        line -= 1
+        break
+      when nil
+        # paragraph: continue
+      else
+        line -= 1
+        break
+      end
+
+      line += 1
+    end
+    line -= 1 if line == @lines.size
+
+    if line > start
+      @lines[line] = (start..line).join("\n") { |i| @lines[i] }
+      @line = line
+    end
   end
 end
